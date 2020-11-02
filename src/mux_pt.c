@@ -32,7 +32,6 @@ static void mux_pt_destroy(struct mux_pt_ctx *ctx)
 
 		conn_stop_tracking(conn);
 		conn_full_close(conn);
-		tasklet_free(ctx->wait_event.tasklet);
 		conn->mux = NULL;
 		conn->ctx = NULL;
 		if (conn->destroy_cb)
@@ -42,6 +41,8 @@ static void mux_pt_destroy(struct mux_pt_ctx *ctx)
 		 */
 		conn_free(conn);
 	}
+        if (ctx->wait_event.tasklet)
+            tasklet_free(ctx->wait_event.tasklet);
 	pool_free(pool_head_pt_ctx, ctx);
 }
 
