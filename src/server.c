@@ -269,6 +269,12 @@ static int srv_parse_backup(char **args, int *cur_arg,
 	return 0;
 }
 
+static int srv_parse_check_send_connect(char **args, int *cur_arg,
+                                        struct proxy *curproxy, struct server *newsrv, char **err)
+{
+        newsrv->check.send_http_connect = 1;
+        return 0;
+}
 
 /* Parse the "cookie" server keyword */
 static int srv_parse_cookie(char **args, int *cur_arg,
@@ -1225,6 +1231,7 @@ static struct srv_kw_list srv_kws = { "ALL", { }, {
 	{ "no-backup",           srv_parse_no_backup,           0,  1 }, /* Flag as non-backup server */
 	{ "no-send-proxy",       srv_parse_no_send_proxy,       0,  1 }, /* Disable use of PROXY V1 protocol */
 	{ "no-send-proxy-v2",    srv_parse_no_send_proxy_v2,    0,  1 }, /* Disable use of PROXY V2 protocol */
+        { "send-http-connect",   srv_parse_check_send_connect,  0,  1 }, /* enable HTTP CONNECT*/
 	{ "no-tfo",              srv_parse_no_tfo,              0,  1 }, /* Disable use of TCP Fast Open */
 	{ "non-stick",           srv_parse_non_stick,           0,  1 }, /* Disable stick-table persistence */
 	{ "observe",             srv_parse_observe,             1,  1 }, /* Enables health adjusting based on observing communication with the server */

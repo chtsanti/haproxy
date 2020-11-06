@@ -13,6 +13,8 @@
 #include <haproxy/connection.h>
 #include <haproxy/stream_interface.h>
 
+#include <assert.h>
+
 struct xprt_handshake_ctx {
 	struct connection *conn;
 	struct wait_event *subs;
@@ -76,6 +78,15 @@ static struct task *xprt_handshake_io_cb(struct task *t, void *bctx, unsigned sh
 			    &ctx->wait_event);
 			goto out;
 		}
+
+	if (conn->flags & CO_FL_SEND_CONNECT) {
+		unsigned int action = 0;
+		if (!conn_connect_handshake(conn, &action)) {
+			assert(action == SUB_RETRY_SEND || action == SUB_RETRY_RECV);
+			ctx->xprt->subscribe(conn, ctx->xprt_ctx, action, &ctx->wait_event);
+			goto out;
+		}
+	}
 
 out:
 	/* Wake the stream if we're done with the handshake, or we have a

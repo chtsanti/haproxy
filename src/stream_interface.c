@@ -414,6 +414,198 @@ int conn_si_send_proxy(struct connection *conn, unsigned int flag)
 	return 0;
 }
 
+#include <assert.h>
+
+static const char *my_strnstr(const char *s, const char *find, size_t slen)
+{
+        size_t len = strlen(find);
+
+        if (len == 0)
+                return NULL;
+
+        while (len <= slen) {
+                if (*s == *find && strncmp(s, find, len) == 0 )
+                        return s;
+                s++,slen--;
+        }
+        return NULL;
+}
+
+struct http_connect {
+        char *conn_str;
+        size_t conn_str_size;
+        size_t conn_str_sent;
+        char *reply;
+        size_t reply_size;
+        size_t reply_buffer_size;
+        int eor;
+};
+
+static void free_http_connect(void *cd)
+{
+        struct http_connect *c = cd;
+        if (c->conn_str)
+                free(c->conn_str);
+        if (c->reply)
+                free(c->reply);
+        free(c);
+}
+
+int conn_connect_handshake(struct connection *conn, unsigned int *nextIo)
+{
+        int ret = 0;
+        char src_str[128];
+        char dst_str[128];
+        struct http_connect *data = NULL;
+        struct stream_interface *si = NULL;
+        struct conn_stream *remote_cs = NULL;
+        struct connection *remote = NULL;
+        struct sockaddr_storage *src = NULL;
+        struct sockaddr_storage *dst = NULL;
+        const struct conn_stream *cs = NULL;
+        unsigned int currentIO;
+
+        data = (struct http_connect *)conn->data;
+        currentIO = (data && data->conn_str_sent >= data->conn_str_size) ? SUB_RETRY_RECV : SUB_RETRY_SEND;
+        cs = cs_get_first(conn);
+
+        if (!cs /*|| conn->mux != &mux_pt_ops*/) {
+                DPRINTF(stderr,"%s: do not send connect request, (!cs or mux!=mux_pt_ops)\n", __FUNCTION__);
+                assert(cs);
+                // assert(conn->mux == &mux_pt_ops);
+                goto out_error;
+        }
+        if (cs->data_cb != &si_conn_cb) {
+                DPRINTF(stderr,"%s: do not send connect request, it is just a check\n", __FUNCTION__);
+
+                if (conn->flags & CO_FL_WAIT_L4_CONN)
+                        conn->flags &= ~CO_FL_WAIT_L4_CONN;
+
+                conn->flags &= ~CO_FL_SEND_CONNECT;
+                return 1;
+        }
+
+        si = cs->data;
+        remote_cs = objt_cs(si_opposite(si)->end);
+        remote = remote_cs ? remote_cs->conn : NULL;
+        if (!remote) {
+                DPRINTF(stderr,"%s: do not send connect request, (no remote connection?)\n", __FUNCTION__);
+                goto out_error;
+        }
+
+        src = remote->src;
+        dst = remote->dst;
+
+        if (data == NULL) {
+                if (!conn_get_src(conn) || !conn_get_dst(conn))
+                        goto out_wait;
+
+                /*This is the first call, initialize the data*/
+                data = calloc(1, sizeof(struct http_connect));
+                data->conn_str = malloc(4096*sizeof(char));
+                data->conn_str_size = 0;
+                data->conn_str_sent = 0;
+                data->reply = NULL;
+                data->reply_size = 0;
+                data->reply_buffer_size = 0;
+                data->eor = 0;
+
+                inet_ntop(AF_INET, &((struct sockaddr_in *)src)->sin_addr, src_str, sizeof(src_str));
+                inet_ntop(AF_INET, &((struct sockaddr_in *)dst)->sin_addr, dst_str, sizeof(dst_str));
+                data->conn_str_size = snprintf(data->conn_str, 4096,
+                                               "CONNECT %s:%d HTTP/1.1\r\n" \
+                                               "Host: %s:%d\r\n"        \
+                                               "X-Client: %s\r\n"       \
+                                               "\r\n",
+                                               dst_str, ntohs(((struct sockaddr_in *)dst)->sin_port),
+                                               dst_str, ntohs(((struct sockaddr_in *)dst)->sin_port),
+                                               src_str
+                        );
+                if (data->conn_str_size >= 4096) {
+                        DPRINTF(stderr,"%s: Not enough space to send CONNECT request\n", __FUNCTION__);
+                        goto out_error;
+                }
+                conn->data = data;
+                conn->free_data = free_http_connect;
+                DPRINTF(stderr,"%s: I will sent:\n%s\n", __FUNCTION__, data->conn_str);
+        }
+
+        if (data->conn_str_sent < data->conn_str_size) {
+                /*Still we have data to sent before read reply*/
+                ret = conn_sock_send(conn,
+                                     data->conn_str + data->conn_str_sent,
+                                     (data->conn_str_size - data->conn_str_sent),
+                                     (conn->subs && (conn->subs->events & SUB_RETRY_SEND)) ? MSG_MORE : 0);
+                if (ret < 0)
+                        goto out_error;
+
+                data->conn_str_sent += ret;
+                if (data->conn_str_sent < data->conn_str_size) {
+                        *nextIo = SUB_RETRY_SEND;
+                        return 0;
+                }
+        }
+
+        // we are waiting for reply
+        if (!data->reply) {
+                data->reply = calloc(1, 1024 * sizeof(char));
+                data->reply_buffer_size = 1024;
+        }
+
+        if (data->eor == 0 && fd_recv_ready(conn->handle.fd)) {
+                do {
+                        if (data->reply_buffer_size == data->reply_size)
+                                goto out_error; /* Not enough space */
+
+                        ret = recv(conn->handle.fd, data->reply + data->reply_size, data->reply_buffer_size - data->reply_size, 0);
+                        if (ret < 0) {
+                                if (errno == EINTR)
+                                        continue;
+                                if (errno == EAGAIN)
+                                        break;
+                                goto out_error;
+                        }
+                        data->reply_size += ret;
+                } while(0);
+
+                data->eor = (my_strnstr(data->reply, "\r\n\r\n", data->reply_size) != NULL);
+                if (data->eor)
+                        DPRINTF(stderr,"%s: OK response received:\n%s\n", __FUNCTION__, data->reply);
+        }
+
+        if (data->eor == 0) {
+                if (conn->flags & CO_FL_WAIT_L4_CONN)
+                        conn->flags &= ~CO_FL_WAIT_L4_CONN;
+                *nextIo = SUB_RETRY_RECV;
+                return 0;
+        }
+
+        /*We are finished, we do not need the structure any more*/
+        free_http_connect(data);
+        conn->data = NULL;
+        conn->free_data = NULL;
+
+        if (conn->flags & CO_FL_WAIT_L4_CONN)
+                conn->flags &= ~CO_FL_WAIT_L4_CONN;
+
+        conn->flags &= ~CO_FL_SEND_CONNECT;
+        *nextIo = 0;
+        return 1;
+
+out_error:
+        if (data)
+                free_http_connect(data);
+        conn->data = NULL;
+        conn->free_data = NULL;
+        /* Write error on the file descriptor */
+        conn->flags |= CO_FL_ERROR;
+        *nextIo = currentIO;
+        return 0;
+out_wait:
+
+        *nextIo = currentIO;
+        return 0;
+}
 
 /* This function is the equivalent to si_update() except that it's
  * designed to be called from outside the stream handlers, typically the lower

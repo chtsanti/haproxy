@@ -1472,6 +1472,17 @@ int connect_server(struct stream *s)
 				conn_get_dst(cli_conn);
 		}
 
+                /* process the case where the server requires the HTTP CONNECT to be sent */
+                srv_conn->send_connect_ofs = 0;
+                if (srv && srv->check.send_http_connect) {
+                        srv_conn->flags |= CO_FL_PRIVATE;
+                        srv_conn->flags |= CO_FL_SEND_CONNECT;
+                        srv_conn->send_connect_ofs = 1; /* must compute size */
+                        cli_conn = objt_conn(strm_orig(s));
+                        if (cli_conn)
+                                conn_get_dst(cli_conn);
+                }
+
 		assign_tproxy_address(s);
 
 		if (srv && (srv->flags & SRV_F_SOCKS4_PROXY)) {

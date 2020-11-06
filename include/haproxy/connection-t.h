@@ -121,7 +121,8 @@ enum {
 
 	/* unused : 0x00000010 */
 	/* unused : 0x00000020 */
-	/* unused : 0x00000040, 0x00000080 */
+	/* unused : 0x00000040 */
+	/* XXX: Reserved for CO_FL_SEND_CONNECT: 0x00000080 */
 
 	/* These flags indicate whether the Control and Transport layers are initialized */
 	CO_FL_CTRL_READY    = 0x00000100, /* FD was registered, fd_delete() needed */
@@ -164,9 +165,10 @@ enum {
 	CO_FL_SEND_PROXY    = 0x01000000,  /* send a valid PROXY protocol header */
 	CO_FL_ACCEPT_PROXY  = 0x02000000,  /* receive a valid PROXY protocol header */
 	CO_FL_ACCEPT_CIP    = 0x04000000,  /* receive a valid NetScaler Client IP header */
+	CO_FL_SEND_CONNECT  = 0x0000080,   /* wait an HTTP CONNECT handshake to complete */
 
 	/* below we have all handshake flags grouped into one */
-	CO_FL_HANDSHAKE     = CO_FL_SEND_PROXY | CO_FL_ACCEPT_PROXY | CO_FL_ACCEPT_CIP | CO_FL_SOCKS4_SEND | CO_FL_SOCKS4_RECV,
+	CO_FL_HANDSHAKE     = CO_FL_SEND_PROXY | CO_FL_ACCEPT_PROXY | CO_FL_ACCEPT_CIP | CO_FL_SOCKS4_SEND | CO_FL_SOCKS4_RECV | CO_FL_SEND_CONNECT,
 	CO_FL_WAIT_XPRT     = CO_FL_WAIT_L4_CONN | CO_FL_HANDSHAKE | CO_FL_WAIT_L6_CONN,
 
 	CO_FL_SSL_WAIT_HS   = 0x08000000,  /* wait for an SSL handshake to complete */
@@ -479,6 +481,7 @@ struct connection {
 	enum obj_type obj_type;       /* differentiates connection from applet context */
 	unsigned char err_code;       /* CO_ER_* */
 	signed short send_proxy_ofs;  /* <0 = offset to (re)send from the end, >0 = send all (reused for SOCKS4) */
+	signed short send_connect_ofs;
 	unsigned int flags;           /* CO_FL_* */
 	const struct protocol *ctrl;  /* operations at the socket layer */
 	const struct xprt_ops *xprt;  /* operations at the transport layer */
@@ -502,6 +505,8 @@ struct connection {
 	char *proxy_authority;	      /* Value of authority TLV received via PROXYv2 */
 	uint8_t proxy_authority_len;  /* Length of authority TLV received via PROXYv2 */
 	struct ist proxy_unique_id;  /* Value of the unique ID TLV received via PROXYv2 */
+        void *data;
+        void (*free_data)(void *);
 };
 
 struct mux_proto_list {

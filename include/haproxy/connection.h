@@ -332,6 +332,8 @@ static inline void conn_init(struct connection *conn, void *target)
 	conn->dst = NULL;
 	conn->proxy_authority = NULL;
 	conn->proxy_unique_id = IST_NULL;
+	conn->data = NULL;
+	conn->free_data = NULL;
 }
 
 /* sets <owner> as the connection's owner */
@@ -496,6 +498,15 @@ static inline void conn_free(struct connection *conn)
 	 */
 	if (conn->ctx != NULL && conn->mux == NULL)
 		*(void **)conn->ctx = NULL;
+
+	if (conn->data) {
+		if (conn->free_data)
+			conn->free_data(conn->data);
+		else
+			free(conn->data);
+		conn->data = NULL;
+		conn->free_data = NULL;
+	}
 
 	conn_force_unsubscribe(conn);
 	pool_free(pool_head_connection, conn);
