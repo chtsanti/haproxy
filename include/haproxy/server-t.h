@@ -298,6 +298,9 @@ struct server {
 	unsigned int init_addr_methods;		/* initial address setting, 3-bit per method, ends at 0, enough to store 10 entries */
 	enum srv_log_proto log_proto;		/* used proto to emit messages on server lines from ring section */
 
+        char *connect_host_expr_str;
+        struct sample_expr *connect_host_expr;
+
 #ifdef USE_OPENSSL
 	char *sni_expr;             /* Temporary variable to store a sample expression for SNI */
 	struct {

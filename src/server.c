@@ -276,6 +276,67 @@ static int srv_parse_check_send_connect(char **args, int *cur_arg,
         return 0;
 }
 
+static int srv_parse_use_connect_host(char **args, int *cur_arg,
+                                        struct proxy *curproxy, struct server *newsrv, char **err)
+{
+        char *arg = NULL;
+        arg = args[*cur_arg + 1];
+        if (!arg) {
+                memprintf(err, "'%s' expects <Session-Variable-Name> as argument.\n", args[*cur_arg]);
+                return ERR_ALERT | ERR_FATAL;
+	}
+
+        free(newsrv->connect_host_expr_str);
+        newsrv->connect_host_expr_str = strdup(arg);
+        return 0;
+}
+
+static struct sample_expr * srv_connect_host_expr_parse(struct server *srv, struct proxy *px, const char *file, int linenum, char **err)
+{
+     int idx;
+     const char *expr_args[] = {
+             srv->connect_host_expr_str,
+             NULL,
+     };
+     idx = 0;
+     px->conf.args.ctx = ARGC_SRV;
+     return sample_parse_expr((char **)expr_args, &idx, file, linenum, err, &px->conf.args, NULL);
+}
+
+static void display_parser_err(const char *file, int linenum, char **args, int cur_arg, int err_code, char **err);
+static int server_parse_connect_host_expr(struct server *newsrv, struct proxy *px, const char *file, int linenum, char **args, int cur_arg)
+{
+        int ret = 0;
+        char *err = NULL;
+        struct sample_expr *expr = NULL;
+        if (!newsrv->connect_host_expr_str)
+                return 0;
+
+        expr = srv_connect_host_expr_parse(newsrv, px, px->conf.file, px->conf.line, &err);
+        if (!expr) {
+		memprintf(&err, "error detected while parsing sni expression : %s", err);
+                goto err;
+	}
+
+	if (!(expr->fetch->val & SMP_VAL_BE_SRV_CON)) {
+		memprintf(&err, "error detected while parsing sni expression : "
+		          " fetch method '%s' extracts information from '%s', "
+		          "none of which is available here.\n",
+		          newsrv->connect_host_expr_str, sample_src_names(expr->fetch->use));
+                goto err;
+	}
+
+        release_sample_expr(newsrv->connect_host_expr);
+        newsrv->connect_host_expr = expr;
+        return 0;
+
+err:
+        ret = ERR_ALERT | ERR_FATAL;
+        display_parser_err(file, linenum, args, cur_arg, ret, &err);
+        free(err);
+        return ret;
+}
+
 /* Parse the "cookie" server keyword */
 static int srv_parse_cookie(char **args, int *cur_arg,
                             struct proxy *curproxy, struct server *newsrv, char **err)
@@ -1231,7 +1292,8 @@ static struct srv_kw_list srv_kws = { "ALL", { }, {
 	{ "no-backup",           srv_parse_no_backup,           0,  1 }, /* Flag as non-backup server */
 	{ "no-send-proxy",       srv_parse_no_send_proxy,       0,  1 }, /* Disable use of PROXY V1 protocol */
 	{ "no-send-proxy-v2",    srv_parse_no_send_proxy_v2,    0,  1 }, /* Disable use of PROXY V2 protocol */
-        { "send-http-connect",   srv_parse_check_send_connect,  0,  1 }, /* enable HTTP CONNECT*/
+	{ "send-http-connect",   srv_parse_check_send_connect,  0,  1 }, /* enable HTTP CONNECT*/
+	{ "use-connect-host",    srv_parse_use_connect_host,    1,  1 }, /* enable HTTP CONNECT*/
 	{ "no-tfo",              srv_parse_no_tfo,              0,  1 }, /* Disable use of TCP Fast Open */
 	{ "non-stick",           srv_parse_non_stick,           0,  1 }, /* Disable stick-table persistence */
 	{ "observe",             srv_parse_observe,             1,  1 }, /* Enables health adjusting based on observing communication with the server */
@@ -1805,6 +1867,9 @@ static int server_finalize_init(const char *file, int linenum, char **args, int 
 		return ret;
 #endif
 
+        if ((ret = server_parse_connect_host_expr(srv, px, file, linenum, args, cur_arg)))
+                return ret;
+
 	if (srv->flags & SRV_F_BACKUP)
 		px->srv_bck++;
 	else
@@ -1881,6 +1946,11 @@ static int server_template_init(struct server *srv, struct proxy *px)
 				goto err;
 		}
 #endif
+                if (newsrv->connect_host_expr_str) {
+                        newsrv->connect_host_expr = srv_connect_host_expr_parse(newsrv, px, NULL, 0, NULL);
+                        if (!newsrv->connect_host_expr)
+                                goto err;
+                }
 		/* Set this new server ID. */
 		srv_set_id_from_prefix(newsrv, srv->tmpl_info.prefix, i);
 
@@ -1898,6 +1968,7 @@ static int server_template_init(struct server *srv, struct proxy *px)
 #ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
 		release_sample_expr(newsrv->ssl_ctx.sni);
 #endif
+                release_sample_expr(newsrv->connect_host_expr);
 		free_check(&newsrv->agent);
 		free_check(&newsrv->check);
 	}

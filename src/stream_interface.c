@@ -28,6 +28,7 @@
 #include <haproxy/pipe-t.h>
 #include <haproxy/pipe.h>
 #include <haproxy/proxy.h>
+#include <haproxy/sample.h>
 #include <haproxy/stream-t.h>
 #include <haproxy/stream_interface.h>
 #include <haproxy/task.h>
@@ -451,11 +452,40 @@ static void free_http_connect(void *cd)
         free(c);
 }
 
+static int conn_connect_compute_hostname(struct stream *s, char *hostname, size_t hostnameSize)
+{
+        struct server *srv;
+        srv = objt_server(s->target);
+        if (!srv)
+                return 0;
+
+        if (srv->connect_host_expr) {
+                struct sample *smp;
+                int rewind;
+                /* Tricky case : we have already scheduled the pending
+                 * HTTP request or TCP data for leaving. So we rewind the
+                 * output data.
+                 */
+                rewind = co_data(&s->req);
+                c_rew(&s->req, rewind);
+                smp = sample_fetch_as_type(s->be, s->sess, s, SMP_OPT_DIR_REQ | SMP_OPT_FINAL, srv->connect_host_expr, SMP_T_STR);
+                /* restore the pointers */
+                c_adv(&s->req, rewind);
+                if (smp_make_safe(smp)) {
+                        if (strlen(smp->data.u.str.area)) {
+                                strncpy(hostname, smp->data.u.str.area, hostnameSize);
+                                return 1;
+                        }
+                }
+        }
+        return 0;
+}
+
 int conn_connect_handshake(struct connection *conn, unsigned int *nextIo)
 {
         int ret = 0;
         char src_str[128];
-        char dst_str[128];
+        char dst_str[1024];
         struct http_connect *data = NULL;
         struct stream_interface *si = NULL;
         struct conn_stream *remote_cs = NULL;
@@ -463,6 +493,7 @@ int conn_connect_handshake(struct connection *conn, unsigned int *nextIo)
         struct sockaddr_storage *src = NULL;
         struct sockaddr_storage *dst = NULL;
         const struct conn_stream *cs = NULL;
+        struct stream *s = NULL;
         unsigned int currentIO;
 
         data = (struct http_connect *)conn->data;
@@ -511,7 +542,9 @@ int conn_connect_handshake(struct connection *conn, unsigned int *nextIo)
                 data->eor = 0;
 
                 inet_ntop(AF_INET, &((struct sockaddr_in *)src)->sin_addr, src_str, sizeof(src_str));
-                inet_ntop(AF_INET, &((struct sockaddr_in *)dst)->sin_addr, dst_str, sizeof(dst_str));
+                s = si_strm(si);
+                if (!conn_connect_compute_hostname(s, dst_str, sizeof(dst_str)))
+                        inet_ntop(AF_INET, &((struct sockaddr_in *)dst)->sin_addr, dst_str, sizeof(dst_str));
                 data->conn_str_size = snprintf(data->conn_str, 4096,
                                                "CONNECT %s:%d HTTP/1.1\r\n" \
                                                "Host: %s:%d\r\n"        \
