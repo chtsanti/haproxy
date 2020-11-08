@@ -13,6 +13,7 @@
 #include <errno.h>
 
 #include <haproxy/api.h>
+#include <haproxy/arg.h>
 #include <haproxy/cfgparse.h>
 #include <haproxy/connection.h>
 #include <haproxy/fd.h>
@@ -776,6 +777,15 @@ int conn_recv_proxy(struct connection *conn, int flag)
 				break;
 			}
 			default:
+				if (tlv_len > 0) {
+					struct proxy2_tlv *tlv_info= calloc(1, sizeof(struct proxy2_tlv));
+					tlv_info->type = tlv_packet->type;
+					tlv_info->length = tlv_len;
+					tlv_info->value = malloc((tlv_len + 1) * sizeof(char));
+					memcpy(tlv_info->value, (char*) tlv_packet->value, tlv_len);
+					tlv_info->value[tlv_len] = '\0';
+					LIST_ADDQ(&conn->pp2_tlvs, &tlv_info->list);
+				}
 				break;
 			}
 		}
@@ -1653,6 +1663,33 @@ int smp_fetch_fc_pp_unique_id(const struct arg *args, struct sample *smp, const 
 	return 1;
 }
 
+static int
+smp_fetch_proxy2_tlv(const struct arg *args, struct sample *smp, const char *kw, void *private)
+{
+	long long int type = 0;
+	struct proxy2_tlv *itlv = NULL;
+	struct connection *conn = objt_conn(smp->sess->origin);
+	if (!conn)
+		return 0;
+
+	if (args) {
+		if (args[0].type == ARGT_SINT) {
+			type = args[0].data.sint;
+		}
+	}
+
+	list_for_each_entry(itlv, &conn->pp2_tlvs, list) {
+		if (type == 0 || type == itlv->type) {
+			smp->data.type = SMP_T_STR;
+			smp->flags |= SMP_F_CONST;
+			smp->data.u.str.area = itlv->value;
+			smp->data.u.str.size = itlv->length;
+			return 1;
+		}
+	}
+	return 0;
+}
+
 /* Note: must not be declared <const> as its list will be overwritten.
  * Note: fetches that may return multiple types must be declared as the lowest
  * common denominator, the type that can be casted into all other ones. For
@@ -1664,6 +1701,7 @@ static struct sample_fetch_kw_list sample_fetch_keywords = {ILH, {
 	{ "fc_rcvd_proxy", smp_fetch_fc_rcvd_proxy, 0, NULL, SMP_T_BOOL, SMP_USE_L4CLI },
 	{ "fc_pp_authority", smp_fetch_fc_pp_authority, 0, NULL, SMP_T_STR, SMP_USE_L4CLI },
 	{ "fc_pp_unique_id", smp_fetch_fc_pp_unique_id, 0, NULL, SMP_T_STR, SMP_USE_L4CLI },
+	{ "fc_rcvd_proxy2_tlv", smp_fetch_proxy2_tlv, ARG1(0,SINT), NULL, SMP_T_STR, SMP_USE_L4CLI },
 	{ /* END */ },
 }};
 

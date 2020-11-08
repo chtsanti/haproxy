@@ -467,6 +467,16 @@ struct cs_info {
 	long t_idle;                 /* idle duration, -1 if never occurs */
 };
 
+/*
+ *This structure holds tlv connection informations send by proxy2 protocol
+ */
+struct proxy2_tlv {
+	struct list list;
+	uint8_t type;
+	int length;
+	char *value;
+};
+
 /* This structure describes a connection with its methods and data.
  * A connection may be performed to proxy or server via a local or remote
  * socket, and can also be made to an internal applet. It can support
@@ -502,6 +512,7 @@ struct connection {
 	char *proxy_authority;	      /* Value of authority TLV received via PROXYv2 */
 	uint8_t proxy_authority_len;  /* Length of authority TLV received via PROXYv2 */
 	struct ist proxy_unique_id;  /* Value of the unique ID TLV received via PROXYv2 */
+	struct list pp2_tlvs;
 };
 
 struct mux_proto_list {

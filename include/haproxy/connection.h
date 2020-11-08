@@ -327,6 +327,7 @@ static inline void conn_init(struct connection *conn, void *target)
 	conn->proxy_netns = NULL;
 	MT_LIST_INIT(&conn->list);
 	LIST_INIT(&conn->session_list);
+	LIST_INIT(&conn->pp2_tlvs);
 	conn->subs = NULL;
 	conn->src = NULL;
 	conn->dst = NULL;
@@ -468,6 +469,13 @@ static inline void conn_force_unsubscribe(struct connection *conn)
 /* Releases a connection previously allocated by conn_new() */
 static inline void conn_free(struct connection *conn)
 {
+	struct proxy2_tlv *tr, *pr;
+	list_for_each_entry_safe(pr, tr, &conn->pp2_tlvs, list) {
+		LIST_DEL(&pr->list);
+		free(pr->value);
+		free(pr);
+	}
+
 	/* If the connection is owned by the session, remove it from its list
 	 */
 	if (LIST_ADDED(&conn->session_list)) {
